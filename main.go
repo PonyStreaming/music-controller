@@ -4,8 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -13,7 +16,9 @@ import (
 	"github.com/go-redis/redis/v7"
 
 	"github.com/PonyFest/music-control/auth"
+	"github.com/PonyFest/music-control/events"
 	"github.com/PonyFest/music-control/songs"
+	"github.com/PonyFest/music-control/streams"
 )
 
 // services provided:
@@ -62,10 +67,23 @@ func parseConfig() (config, error) {
 	if c.MusicRoot == "" {
 		return c, fmt.Errorf("--music-root is required")
 	}
+	if !strings.HasSuffix(c.MusicRoot, "/") {
+		c.MusicRoot += "/"
+	}
 	return c, nil
 }
 
+func acceptAllCors(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "" {
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	c, err := parseConfig()
 	if err != nil {
 		log.Fatalf("error: %v.\n", err)
@@ -80,10 +98,9 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-
-	musicHandler := songs.New(s3Client, c.S3Bucket, redisClient)
-
-	mux.Handle("/api/tracks", musicHandler)
+	mux.Handle("/api/tracks", songs.New(s3Client, c.S3Bucket, redisClient))
+	mux.Handle("/api/streams/", http.StripPrefix("/api/streams", streams.New(redisClient, c.MusicRoot)))
+	mux.Handle("/api/events", events.New(redisClient))
 
 	var handler http.Handler
 	if c.Password != "" {
@@ -91,7 +108,7 @@ func main() {
 	} else {
 		handler = mux
 	}
-	http.Handle("/", handler)
+	http.Handle("/", acceptAllCors(handler))
 	log.Fatalln(http.ListenAndServe(c.Bind, nil))
 }
 

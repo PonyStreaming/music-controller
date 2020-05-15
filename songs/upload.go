@@ -16,7 +16,8 @@ import (
 	"github.com/google/uuid"
 )
 
-const trackPoolKey = "track-pool"
+const TrackPoolKey = "track-pool"
+const EventsKey = "events"
 
 type MusicHandler struct {
 	s3     *s3.S3
@@ -42,7 +43,7 @@ func (m *MusicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *MusicHandler) listTracks(w http.ResponseWriter, r *http.Request) {
-	trackIds, err := m.redis.LRange(trackPoolKey, 0, -1).Result()
+	trackIds, err := m.redis.SMembers(TrackPoolKey).Result()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to list track IDs: %v", err), http.StatusInternalServerError)
 		return
@@ -132,12 +133,25 @@ func (m *MusicHandler) processMusicFile(file io.ReadSeeker) (uuid.UUID, error) {
 		if err := tx.HSet(trackID.String(), "title", t.Title(), "artist", t.Artist()).Err(); err != nil {
 			return err
 		}
-		if err := tx.RPush(trackPoolKey, trackID.String()).Err(); err != nil {
+		if err := tx.SAdd(TrackPoolKey, trackID.String()).Err(); err != nil {
 			return err
 		}
 		return nil
 	}); err != nil {
 		return uuid.Nil, fmt.Errorf("file uploaded but metadata storage failed: %v", err)
+	}
+	j, err := json.Marshal(map[string]string{
+		"event":   "poolTrackAdded",
+		"trackId": trackID.String(),
+		"title":   t.Title(),
+		"artist":  t.Artist(),
+	})
+	if err == nil {
+		if err := m.redis.Publish(EventsKey, j).Err(); err != nil {
+			log.Printf("Failed to publish track added event: %v.\n", err)
+		}
+	} else {
+		log.Printf("Failed to encode JSON, somehow: %v.\n", err)
 	}
 	log.Printf("Uploaded %s\n", trackID)
 	return trackID, nil
