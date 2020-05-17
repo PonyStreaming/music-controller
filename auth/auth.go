@@ -12,11 +12,8 @@ type authedHandler struct {
 }
 
 func (ah *authedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	_, pass, ok := r.BasicAuth()
-	if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(ah.password)) != 1 {
-		w.Header().Set("WWW-Authenticate", `Basic realm="`+ah.realm+`"`)
-		w.WriteHeader(401)
-		_, _ = w.Write([]byte("Unauthorised.\n"))
+	if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("password")), []byte(ah.password)) != 1 {
+		http.Error(w, "Unauthorized.", http.StatusUnauthorized)
 		return
 	}
 
