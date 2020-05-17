@@ -95,8 +95,13 @@ func (h *Handler) handleNext(w http.ResponseWriter, r *http.Request) {
 		if h.redis.Exists(next).Val() == 0 {
 			continue
 		}
+		trackData, err := h.trackIdToTrack(next)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("looking up extant track failed I guess: %v", err), http.StatusInternalServerError)
+			return
+		}
 		h.publishUpNextUpdate(stream)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "trackId": next, "trackUrl": h.trackIdToURL(next)}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "track": trackData}); err != nil {
 			http.Error(w, fmt.Sprintf("encoding JSON failed: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -129,8 +134,13 @@ func (h *Handler) handleNext(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "apparently there is no music to play", http.StatusTeapot)
 			return
 		}
-		oldestTrack := recentlyPlayed.Val()[0]
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "trackId": oldestTrack, "trackUrl": h.trackIdToURL(oldestTrack)}); err != nil {
+		oldestTrack := recentlyPlayed.Val()[len(recentlyPlayed.Val())-1]
+		trackData, err := h.trackIdToTrack(oldestTrack)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("found the oldest track but also didn't: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "track": trackData}); err != nil {
 			http.Error(w, fmt.Sprintf("encoding JSON failed: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -141,10 +151,26 @@ func (h *Handler) handleNext(w http.ResponseWriter, r *http.Request) {
 		selectionList = append(selectionList, track)
 	}
 	track := selectionList[rand.Intn(len(selectionList))]
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "trackId": track, "trackUrl": h.trackIdToURL(track)}); err != nil {
+	// look up the track and include that metadata
+	trackData, err := h.trackIdToTrack(track)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("found a track but also didn't: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "track": trackData}); err != nil {
 		http.Error(w, fmt.Sprintf("encoding JSON failed: %v", err), http.StatusInternalServerError)
 		return
 	}
+}
+
+func (h *Handler) trackIdToTrack(trackId string) (map[string]string, error) {
+	track, err := h.redis.HGetAll(trackId).Result()
+	if err != nil {
+		return nil, fmt.Errorf("couldn't look up track: %v", err)
+	}
+	track["trackId"] = trackId
+	track["trackUrl"] = h.trackIdToURL(trackId)
+	return track, nil
 }
 
 func (h *Handler) publishUpNextUpdate(stream string) {
@@ -182,8 +208,13 @@ func (h *Handler) handleState(w http.ResponseWriter, r *http.Request) {
 			case "currentTrack":
 				p := h.redis.Pipeline()
 				p.HSet(stateKey, "currentTrack", v)
+				// Remove the current entry in the recently played list, if any
+				// This produces saner behaviour if the list is larger than the track pool.
+				p.LRem(fmt.Sprintf(recentlyPlayedFormat, stream), 0, v)
+				// Make this the most recent played
 				p.LPush(fmt.Sprintf(recentlyPlayedFormat, stream), v)
-				p.LTrim(fmt.Sprintf(recentlyPlayedFormat, stream), 0, 5)
+				// Truncate the list
+				p.LTrim(fmt.Sprintf(recentlyPlayedFormat, stream), 0, 9)
 				results, err := p.Exec()
 				if err != nil {
 					http.Error(w, fmt.Sprintf("failed to execute current track update: %v", err), http.StatusInternalServerError)
@@ -199,8 +230,11 @@ func (h *Handler) handleState(w http.ResponseWriter, r *http.Request) {
 					log.Printf("Failed to publish update: %v.\n", err)
 				}
 			case "playing":
+				fallthrough
 			case "autoplay":
-				h.redis.HSet(stateKey, k, v)
+				if err := h.redis.HSet(stateKey, k, v).Err(); err != nil {
+					log.Printf("Failed to update %q state: %v.\n", k, err)
+				}
 				if err := h.publishUpdate(stream, k, v); err != nil {
 					log.Printf("Failed to publish update: %v.\n", err)
 				}
@@ -225,7 +259,21 @@ func (h *Handler) handleState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("failed to fetch information: %v", err), http.StatusInternalServerError)
 			return
 		}
-		if err := json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "state": state}); err != nil {
+		result := map[string]interface{}{}
+		for k, v := range state {
+			result[k] = v
+		}
+		if trackId, ok := state["currentTrack"]; ok {
+			track, err := h.redis.HGetAll(trackId).Result()
+			if err == nil {
+				track["trackId"] = trackId
+				track["trackUrl"] = h.trackIdToURL(trackId)
+				result["currentTrack"] = track
+			} else {
+				delete(result, "currentTrack")
+			}
+		}
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "state": result}); err != nil {
 			http.Error(w, fmt.Sprintf("failed to marshal json: %v", err), http.StatusInternalServerError)
 			return
 		}
