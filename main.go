@@ -100,7 +100,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/tracks", songs.New(s3Client, c.S3Bucket, redisClient))
+	mux.Handle("/api/tracks", songs.New(s3Client, c.S3Bucket, redisClient, c.MusicRoot))
 	mux.Handle("/api/streams/", http.StripPrefix("/api/streams", streams.New(redisClient, c.MusicRoot)))
 	mux.Handle("/api/events", events.New(redisClient))
 

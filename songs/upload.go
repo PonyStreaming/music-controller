@@ -23,13 +23,15 @@ type MusicHandler struct {
 	s3     *s3.S3
 	bucket string
 	redis  *redis.Client
+	root   string
 }
 
-func New(s3 *s3.S3, bucket string, redis *redis.Client) *MusicHandler {
+func New(s3 *s3.S3, bucket string, redis *redis.Client, root string) *MusicHandler {
 	return &MusicHandler{
 		s3:     s3,
 		bucket: bucket,
 		redis:  redis,
+		root:   root,
 	}
 }
 
@@ -65,6 +67,8 @@ func (m *MusicHandler) listTracks(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("Couldn't look up data for track %q: %v\n", trackId, err)
 		}
+		track["trackId"] = trackId
+		track["trackUrl"] = m.root + trackId
 		ret[trackId] = track
 	}
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{"tracks": ret}); err != nil {
@@ -140,11 +144,14 @@ func (m *MusicHandler) processMusicFile(file io.ReadSeeker) (uuid.UUID, error) {
 	}); err != nil {
 		return uuid.Nil, fmt.Errorf("file uploaded but metadata storage failed: %v", err)
 	}
-	j, err := json.Marshal(map[string]string{
-		"event":   "poolTrackAdded",
-		"trackId": trackID.String(),
-		"title":   t.Title(),
-		"artist":  t.Artist(),
+	j, err := json.Marshal(map[string]interface{}{
+		"event": "poolTrackAdded",
+		"track": map[string]string{
+			"trackId":  trackID.String(),
+			"trackUrl": m.root + trackID.String(),
+			"title":    t.Title(),
+			"artist":   t.Artist(),
+		},
 	})
 	if err == nil {
 		if err := m.redis.Publish(EventsKey, j).Err(); err != nil {
