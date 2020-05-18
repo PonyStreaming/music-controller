@@ -214,7 +214,7 @@ func (h *Handler) handleState(w http.ResponseWriter, r *http.Request) {
 				// Make this the most recent played
 				p.LPush(fmt.Sprintf(recentlyPlayedFormat, stream), v)
 				// Truncate the list
-				p.LTrim(fmt.Sprintf(recentlyPlayedFormat, stream), 0, 9)
+				p.LTrim(fmt.Sprintf(recentlyPlayedFormat, stream), 0, 19)
 				results, err := p.Exec()
 				if err != nil {
 					http.Error(w, fmt.Sprintf("failed to execute current track update: %v", err), http.StatusInternalServerError)
